@@ -1,5 +1,5 @@
 // schema.js
-const { gql } = require('@apollo/server');
+const gql = require('graphql-tag');
 
 const typeDefs = gql`
   # User Type
