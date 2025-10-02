@@ -2,6 +2,12 @@
 const gql = require('graphql-tag');
 
 const typeDefs = gql`
+  # AuthPayload Type
+  type AuthPayload {
+    token: String!
+    user: User!
+  }
+
   # User Type
   type User {
     id: ID!
@@ -23,14 +29,16 @@ const typeDefs = gql`
     getAllTodos: [Todo!]
     getTodosByUser(userId: ID!): [Todo!]
     getAllUsers: [User!]
+    me: User
   }
 
   # Mutations
   type Mutation {
-    addTodo(userId: ID!, text: String!): Todo!
+    signUp(username: String!, email: String!, password: String!): AuthPayload!
+    login(email: String!, password: String!): AuthPayload!
+    addTodo(text: String!): Todo!
     updateTodo(id: ID!): Todo!
     deleteTodo(id: ID!): Todo
-    addUser(username: String!, email: String!): User!
   }
 `;
 

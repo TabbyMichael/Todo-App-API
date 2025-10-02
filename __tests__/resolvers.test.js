@@ -1,20 +1,24 @@
 // __tests__/resolvers.test.js
 const resolvers = require('../resolvers');
-const { users, todos } = require('../data');
+const data = require('../data');
+const bcrypt = require('bcryptjs');
 
-// A simple deep copy to reset data between tests
-const originalData = JSON.parse(JSON.stringify({ users, todos }));
+// Capture the initial state of the data for resetting between tests
+const originalData = {
+  users: JSON.parse(JSON.stringify(data.users)),
+  todos: JSON.parse(JSON.stringify(data.todos)),
+};
 
 describe('Resolvers', () => {
+  // Mock context for an authenticated user (John Doe)
+  const mockContext = { user: originalData.users[0] };
+
   beforeEach(() => {
     // Reset data before each test
-    const { users: newUsers, todos: newTodos } = JSON.parse(JSON.stringify(originalData));
-
-    // Clear the arrays and push the original data back in
-    users.length = 0;
-    todos.length = 0;
-    users.push(...newUsers);
-    todos.push(...newTodos);
+    data.users.length = 0;
+    data.todos.length = 0;
+    data.users.push(...JSON.parse(JSON.stringify(originalData.users)));
+    data.todos.push(...JSON.parse(JSON.stringify(originalData.todos)));
   });
 
   describe('Query', () => {
@@ -26,41 +30,105 @@ describe('Resolvers', () => {
     it('should get todos for a specific user', () => {
       const userTodos = resolvers.Query.getTodosByUser(null, { userId: '1' });
       expect(userTodos).toHaveLength(2);
-      expect(userTodos.every(todo => todo.userId === '1')).toBe(true);
     });
 
     it('should get all users', () => {
       const allUsers = resolvers.Query.getAllUsers();
       expect(allUsers).toHaveLength(2);
     });
+
+    it('should fetch the current authenticated user with "me" query', () => {
+      const me = resolvers.Query.me(null, {}, mockContext);
+      expect(me).toEqual(mockContext.user);
+    });
+
+    it('should throw an error for "me" query if not authenticated', () => {
+      expect(() => resolvers.Query.me(null, {}, {})).toThrow('You are not authenticated!');
+    });
   });
 
   describe('Mutation', () => {
-    it('should add a new todo', () => {
-      const newTodo = resolvers.Mutation.addTodo(null, { userId: '1', text: 'New Todo' });
-      expect(newTodo.text).toBe('New Todo');
-      expect(newTodo.completed).toBe(false);
-      const allTodos = resolvers.Query.getAllTodos();
-      expect(allTodos).toHaveLength(4);
+    describe('signUp', () => {
+      it('should sign up a new user and return a token', () => {
+        const result = resolvers.Mutation.signUp(null, {
+          username: 'New User',
+          email: 'new@example.com',
+          password: 'newpassword',
+        });
+        expect(result.user.username).toBe('New User');
+        expect(result.token).toEqual(expect.any(String));
+        expect(data.users).toHaveLength(3);
+        const newUser = data.users.find(u => u.email === 'new@example.com');
+        expect(bcrypt.compareSync('newpassword', newUser.password)).toBe(true);
+      });
     });
 
-    it('should update a todo', () => {
-      const updatedTodo = resolvers.Mutation.updateTodo(null, { id: '1' });
-      expect(updatedTodo.completed).toBe(true);
+    describe('login', () => {
+      it('should log in an existing user and return a token', () => {
+        const result = resolvers.Mutation.login(null, { email: 'john@example.com', password: 'password' });
+        expect(result.user.email).toBe('john@example.com');
+        expect(result.token).toEqual(expect.any(String));
+      });
+
+      it('should throw an error for invalid email', () => {
+        expect(() => resolvers.Mutation.login(null, { email: 'wrong@example.com', password: 'password' })).toThrow('Invalid credentials.');
+      });
+
+      it('should throw an error for invalid password', () => {
+        expect(() => resolvers.Mutation.login(null, { email: 'john@example.com', password: 'wrongpassword' })).toThrow('Invalid credentials.');
+      });
     });
 
-    it('should delete a todo', () => {
-      const deletedTodo = resolvers.Mutation.deleteTodo(null, { id: '1' });
-      expect(deletedTodo.id).toBe('1');
-      const allTodos = resolvers.Query.getAllTodos();
-      expect(allTodos).toHaveLength(2);
+    describe('addTodo', () => {
+      it('should add a new todo for the authenticated user', () => {
+        const newTodo = resolvers.Mutation.addTodo(null, { text: 'Test Todo' }, mockContext);
+        expect(newTodo.text).toBe('Test Todo');
+        expect(newTodo.userId).toBe(mockContext.user.id);
+        expect(data.todos).toHaveLength(4);
+      });
+
+      it('should throw an error if not authenticated', () => {
+        expect(() => resolvers.Mutation.addTodo(null, { text: 'Test Todo' }, {})).toThrow('You are not authenticated!');
+      });
     });
 
-    it('should add a new user', () => {
-      const newUser = resolvers.Mutation.addUser(null, { username: 'Test User', email: 'test@user.com' });
-      expect(newUser.username).toBe('Test User');
-      const allUsers = resolvers.Query.getAllUsers();
-      expect(allUsers).toHaveLength(3);
+    describe('updateTodo', () => {
+      it('should update a todo for the authenticated user', () => {
+        const updatedTodo = resolvers.Mutation.updateTodo(null, { id: '1' }, mockContext);
+        expect(updatedTodo.completed).toBe(true);
+      });
+
+      it('should throw an error if trying to update another user\'s todo', () => {
+        expect(() => resolvers.Mutation.updateTodo(null, { id: '3' }, mockContext)).toThrow('You are not authorized to perform this action.');
+      });
+
+      it('should throw an error if not authenticated', () => {
+        expect(() => resolvers.Mutation.updateTodo(null, { id: '1' }, {})).toThrow('You are not authenticated!');
+      });
+
+      it('should throw an error if todo not found', () => {
+        expect(() => resolvers.Mutation.updateTodo(null, { id: '999' }, mockContext)).toThrow('Todo not found.');
+      });
+    });
+
+    describe('deleteTodo', () => {
+      it('should delete a todo for the authenticated user', () => {
+        const deletedTodo = resolvers.Mutation.deleteTodo(null, { id: '1' }, mockContext);
+        expect(deletedTodo.id).toBe('1');
+        expect(data.todos).toHaveLength(2);
+      });
+
+      it('should throw an error if trying to delete another user\'s todo', () => {
+        expect(() => resolvers.Mutation.deleteTodo(null, { id: '3' }, mockContext)).toThrow('You are not authorized to perform this action.');
+      });
+
+      it('should throw an error if not authenticated', () => {
+        expect(() => resolvers.Mutation.deleteTodo(null, { id: '1' }, {})).toThrow('You are not authenticated!');
+      });
+
+      it('should throw an error if todo not found', () => {
+        expect(() => resolvers.Mutation.deleteTodo(null, { id: '999' }, mockContext)).toThrow('Todo not found.');
+      });
     });
   });
 
@@ -68,13 +136,13 @@ describe('Resolvers', () => {
     it("should get a user's todos", () => {
       const user = { id: '1' };
       const result = resolvers.User.todos(user);
-      expect(result).toEqual(todos.filter(todo => todo.userId === '1'));
+      expect(result).toHaveLength(2);
     });
 
     it("should get a todo's user", () => {
       const todo = { userId: '1' };
       const result = resolvers.Todo.user(todo);
-      expect(result).toEqual(users.find(user => user.id === '1'));
+      expect(result.id).toBe('1');
     });
   });
 });

@@ -1,9 +1,10 @@
 // data.js
+const bcrypt = require('bcryptjs');
 
 // In-memory data store
 let users = [
-  { id: '1', username: 'John Doe', email: 'john@example.com' },
-  { id: '2', username: 'Jane Doe', email: 'jane@example.com' },
+  { id: '1', username: 'John Doe', email: 'john@example.com', password: bcrypt.hashSync('password', 10) },
+  { id: '2', username: 'Jane Doe', email: 'jane@example.com', password: bcrypt.hashSync('password', 10) },
 ];
 
 let todos = [
