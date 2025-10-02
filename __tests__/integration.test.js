@@ -2,122 +2,165 @@
 const { ApolloServer } = require('@apollo/server');
 const typeDefs = require('../schema');
 const resolvers = require('../resolvers');
-const { users, todos } = require('../data');
+const data =require('../data');
 
 // A simple deep copy to reset data between tests
-const originalData = JSON.parse(JSON.stringify({ users, todos }));
+const originalData = {
+  users: JSON.parse(JSON.stringify(data.users)),
+  todos: JSON.parse(JSON.stringify(data.todos)),
+};
 
-describe('Integration Tests', () => {
+describe('Integration Tests with Auth', () => {
   let testServer;
+  let authenticatedContext;
 
   beforeAll(() => {
     testServer = new ApolloServer({
       typeDefs,
       resolvers,
     });
+    // Create a context that simulates an authenticated user (John Doe)
+    authenticatedContext = { user: originalData.users.find(u => u.id === '1') };
   });
 
   beforeEach(() => {
     // Reset data before each test
-    const { users: newUsers, todos: newTodos } = JSON.parse(JSON.stringify(originalData));
-
-    // Clear the arrays and push the original data back in
-    require('../data').users.length = 0;
-    require('../data').todos.length = 0;
-    require('../data').users.push(...newUsers);
-    require('../data').todos.push(...newTodos);
+    data.users.length = 0;
+    data.todos.length = 0;
+    data.users.push(...JSON.parse(JSON.stringify(originalData.users)));
+    data.todos.push(...JSON.parse(JSON.stringify(originalData.todos)));
   });
 
-  describe('Queries', () => {
-    it('should fetch all todos', async () => {
+  describe('Authentication', () => {
+    it('should sign up a new user and return a token and user', async () => {
       const response = await testServer.executeOperation({
-        query: 'query GetAllTodos { getAllTodos { id text } }',
-      });
-      expect(response.body.singleResult.data.getAllTodos.length).toBe(3);
-    });
-
-    it('should fetch todos for a specific user', async () => {
-      const response = await testServer.executeOperation({
-        query: 'query GetTodosByUser($userId: ID!) { getTodosByUser(userId: $userId) { id text } }',
-        variables: { userId: '1' },
-      });
-      expect(response.body.singleResult.data.getTodosByUser.length).toBe(2);
-    });
-
-    it('should fetch all users', async () => {
-      const response = await testServer.executeOperation({
-        query: 'query GetAllUsers { getAllUsers { id username } }',
-      });
-      expect(response.body.singleResult.data.getAllUsers.length).toBe(2);
-    });
-  });
-
-  describe('Mutations', () => {
-    it('should add a new todo and verify it exists', async () => {
-      const addResponse = await testServer.executeOperation({
         query: `
-          mutation AddTodo($userId: ID!, $text: String!) {
-            addTodo(userId: $userId, text: $text) {
-              id
-              text
-              completed
+          mutation SignUp($username: String!, $email: String!, $password: String!) {
+            signUp(username: $username, email: $email, password: $password) {
+              token
+              user { id username email }
             }
           }
         `,
-        variables: { userId: '1', text: 'New Integration Todo' },
+        variables: { username: 'New User', email: 'new@example.com', password: 'password123' },
       });
 
-      expect(addResponse.body.singleResult.data.addTodo.text).toBe('New Integration Todo');
-
-      const verifyResponse = await testServer.executeOperation({
-        query: '{ getAllTodos { text } }',
-      });
-      const allTodos = verifyResponse.body.singleResult.data.getAllTodos;
-      expect(allTodos.length).toBe(4);
-      expect(allTodos.some(todo => todo.text === 'New Integration Todo')).toBe(true);
+      const { token, user } = response.body.singleResult.data.signUp;
+      expect(token).toEqual(expect.any(String));
+      expect(user.username).toBe('New User');
+      expect(data.users.length).toBe(3);
     });
 
-    it('should update a todo and verify the change', async () => {
-      await testServer.executeOperation({
-        query: 'mutation UpdateTodo($id: ID!) { updateTodo(id: $id) { completed } }',
+    it('should log in an existing user and return a token', async () => {
+      const response = await testServer.executeOperation({
+        query: `
+          mutation Login($email: String!, $password: String!) {
+            login(email: $email, password: $password) {
+              token
+              user { email }
+            }
+          }
+        `,
+        variables: { email: 'john@example.com', password: 'password' },
+      });
+      const { token, user } = response.body.singleResult.data.login;
+      expect(token).toEqual(expect.any(String));
+      expect(user.email).toBe('john@example.com');
+    });
+
+    it('should fail to log in with an incorrect password', async () => {
+      const response = await testServer.executeOperation({
+        query: `
+          mutation Login($email: String!, $password: String!) {
+            login(email: $email, password: $password) {
+              token
+            }
+          }
+        `,
+        variables: { email: 'john@example.com', password: 'wrongpassword' },
+      });
+      expect(response.body.singleResult.errors[0].message).toBe('Invalid credentials.');
+    });
+  });
+
+  describe('Protected Operations', () => {
+    it('should fetch the authenticated user with the "me" query', async () => {
+      const response = await testServer.executeOperation({
+        query: 'query Me { me { id username } }',
+      }, {
+        contextValue: authenticatedContext,
+      });
+      expect(response.body.singleResult.errors).toBeUndefined();
+      expect(response.body.singleResult.data.me.id).toBe(authenticatedContext.user.id);
+    });
+
+    it('should add a todo for the authenticated user', async () => {
+      const response = await testServer.executeOperation({
+        query: 'mutation AddTodo($text: String!) { addTodo(text: $text) { text user { id } } }',
+        variables: { text: 'Authenticated Todo' },
+      }, {
+        contextValue: authenticatedContext,
+      });
+      expect(response.body.singleResult.errors).toBeUndefined();
+      expect(response.body.singleResult.data.addTodo.user.id).toBe(authenticatedContext.user.id);
+      expect(data.todos.length).toBe(4);
+    });
+
+    it('should update a todo owned by the authenticated user', async () => {
+      const response = await testServer.executeOperation({
+        query: 'mutation UpdateTodo($id: ID!) { updateTodo(id: $id) { id completed } }',
         variables: { id: '1' },
+      }, {
+        contextValue: authenticatedContext,
       });
-
-      const verifyResponse = await testServer.executeOperation({
-        query: 'query GetTodosByUser($userId: ID!) { getTodosByUser(userId: $userId) { id completed } }',
-        variables: { userId: '1' },
-      });
-      const userTodos = verifyResponse.body.singleResult.data.getTodosByUser;
-      const updatedTodo = userTodos.find(todo => todo.id === '1');
-      expect(updatedTodo.completed).toBe(true);
+      expect(response.body.singleResult.errors).toBeUndefined();
+      expect(response.body.singleResult.data.updateTodo.completed).toBe(true);
     });
 
-    it('should delete a todo and verify it is gone', async () => {
-      await testServer.executeOperation({
+    it('should delete a todo owned by the authenticated user', async () => {
+      const response = await testServer.executeOperation({
         query: 'mutation DeleteTodo($id: ID!) { deleteTodo(id: $id) { id } }',
         variables: { id: '1' },
+      }, {
+        contextValue: authenticatedContext,
       });
+      expect(response.body.singleResult.errors).toBeUndefined();
+      expect(data.todos.some(todo => todo.id === '1')).toBe(false);
+    });
+  });
 
-      const verifyResponse = await testServer.executeOperation({
-        query: '{ getAllTodos { id } }',
-      });
-      const allTodos = verifyResponse.body.singleResult.data.getAllTodos;
-      expect(allTodos.length).toBe(2);
-      expect(allTodos.some(todo => todo.id === '1')).toBe(false);
+  describe('Authorization and Unauthenticated Access', () => {
+    it('should fail the "me" query if not authenticated', async () => {
+      const response = await testServer.executeOperation({ query: 'query Me { me { id } }' });
+      expect(response.body.singleResult.errors[0].message).toBe('You are not authenticated!');
     });
 
-    it('should add a user and verify they exist', async () => {
-      await testServer.executeOperation({
-        query: 'mutation AddUser($username: String!, $email: String!) { addUser(username: $username, email: $email) { username } }',
-        variables: { username: 'New User', email: 'new@example.com' },
+    it('should fail to add a todo if not authenticated', async () => {
+      const response = await testServer.executeOperation({
+        query: 'mutation AddTodo($text: String!) { addTodo(text: $text) { id } }',
+        variables: { text: 'Unauthenticated Todo' },
       });
+      expect(response.body.singleResult.errors[0].message).toBe('You are not authenticated!');
+    });
 
-      const verifyResponse = await testServer.executeOperation({
-        query: '{ getAllUsers { username } }',
+    it('should fail to update a todo owned by another user', async () => {
+      const response = await testServer.executeOperation({
+        query: 'mutation UpdateTodo($id: ID!) { updateTodo(id: $id) { id } }',
+        variables: { id: '3' },
+      }, {
+        contextValue: authenticatedContext,
       });
-      const allUsers = verifyResponse.body.singleResult.data.getAllUsers;
-      expect(allUsers.length).toBe(3);
-      expect(allUsers.some(user => user.username === 'New User')).toBe(true);
+      expect(response.body.singleResult.errors[0].message).toBe('You are not authorized to perform this action.');
+    });
+
+    it('should fail to delete a todo owned by another user', async () => {
+      const response = await testServer.executeOperation({
+        query: 'mutation DeleteTodo($id: ID!) { deleteTodo(id: $id) { id } }',
+        variables: { id: '3' },
+      }, {
+        contextValue: authenticatedContext,
+      });
+      expect(response.body.singleResult.errors[0].message).toBe('You are not authorized to perform this action.');
     });
   });
 });
